@@ -1,0 +1,690 @@
+<!DOCTYPE <!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>WEB GL</title>
+
+  <!--
+  <img src="ac44_logo.png" alt="ac44 logo" style="width:165px;height:84px;">
+  -->
+
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" type="text/css" media="screen" href="main.css" />
+
+  <script src="glBoilerplate.js" defer></script>
+
+  <script src="GPUMath.js" defer></script>
+
+  <script src="three.min.js" defer></script>
+
+  <script src="threeView.js" defer></script>
+
+  <script src="main.js" defer></script>
+
+  <script id="baseVertexShader" type="x-shader/x-vertex">
+
+    precision highp float;
+    precision mediump sampler2D;
+
+    attribute vec2 a_position;
+    varying vec2 vUv;
+
+    void main () {
+      vUv = a_position * 0.5 + 0.5;
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+
+  </script>
+
+  <script id="advectionShader" type="x-shader/x-fragment">
+    precision highp float;
+    precision mediump sampler2D;
+
+    varying vec2 vUv;
+    uniform sampler2D u_velocity;
+    uniform sampler2D u_source; // u_material
+    uniform vec2 texelSize;
+    uniform float dt;
+    uniform float dissipation;
+
+    vec4 bilinearInterpolation (in sampler2D sam, in vec2 p) {
+
+      vec4 st;
+      st.xy = floor(p - 0.5) + 0.5;
+      st.zw = st.xy + 1.0;
+      vec4 uv = st * texelSize.xyxy;
+      vec4 a = texture2D(sam, uv.xy);
+      vec4 b = texture2D(sam, uv.zy);
+      vec4 c = texture2D(sam, uv.xw);
+      vec4 d = texture2D(sam, uv.zw);
+      vec2 f = p - st.xy;
+
+      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+
+    }
+
+    void main () {
+
+      vec2 fragCoord = gl_FragCoord.xy;
+
+      // vec2 coord = fragCoord - dt * texture2D(u_velocity, vUv).xy;
+      // gl_FragColor = dissipation * bilinearInterpolation(u_source, coord);
+      // gl_FragColor.a = 1.0;
+      vec2 coord = fragCoord - dt * texture2D(u_velocity, vUv).xy;
+      vec4 color = dissipation * bilinearInterpolation(u_source, coord);
+      gl_FragColor = vec4(color.xyz, 1.0);
+
+    }
+  </script>
+
+  <script id="jacobiShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_b;
+    uniform sampler2D u_x;
+
+    uniform vec2 u_textureSize;
+
+    uniform float u_alpha;
+    uniform float u_rBeta;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        //implicitly solve diffusion via jacobi iteration
+
+        vec2 xL = texture2D(u_x, (fragCoord+vec2(1.0, 0.0))/u_textureSize).xy;
+        vec2 xR = texture2D(u_x, (fragCoord+vec2(-1.0, 0.0))/u_textureSize).xy;
+        vec2 xB = texture2D(u_x, (fragCoord+vec2(0.0, -1.0))/u_textureSize).xy;
+        vec2 xT = texture2D(u_x, (fragCoord+vec2(0.0, 1.0))/u_textureSize).xy;
+
+        vec2 bC = texture2D(u_b, fragCoord/u_textureSize).xy;
+
+        vec2 xNew = (xL + xR + xB + xT + u_alpha * bC) * u_rBeta;
+
+        gl_FragColor = vec4(xNew, 0, 0);
+    }
+
+  </script>
+
+  <script id="fApplicationShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_velocity;
+
+    uniform vec2 u_textureSize;
+
+    uniform vec2 u_mouseCoord;
+    uniform vec2 u_mouseDir;
+    uniform float u_mouseEnable;
+
+    uniform float u_reciprocalRadius;
+
+    uniform float u_dt;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec2 currentVelocity = texture2D(u_velocity, fragCoord/u_textureSize).xy;
+
+        if (u_mouseEnable == 1.0){
+            vec2 pxDist = fragCoord - u_mouseCoord;
+            currentVelocity += u_mouseDir*u_dt*exp(-(pxDist.x*pxDist.x+pxDist.y*pxDist.y)*u_reciprocalRadius);
+        }
+
+        gl_FragColor = vec4(currentVelocity, 0, 0);
+    }
+
+  </script>
+
+  <script id="divergenceShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_velocity;
+
+    uniform vec2 u_textureSize;
+
+    uniform float u_rdx;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        float wL = texture2D(u_velocity, (fragCoord+vec2(-1.0, 0.0))/u_textureSize).x;
+        float wR = texture2D(u_velocity, (fragCoord+vec2(1.0, 0.0))/u_textureSize).x;
+        float wB = texture2D(u_velocity, (fragCoord+vec2(0.0, -1.0))/u_textureSize).y;
+        float wT = texture2D(u_velocity, (fragCoord+vec2(0.0, 1.0))/u_textureSize).y;
+
+        float div = u_rdx*(( wR - wL ) + ( wT - wB ));
+        gl_FragColor = vec4(div, 0, 0, 0);
+    }
+
+  </script>
+
+  <script id="gradientSubtractionShader" type="x-shader/x-fragment">
+
+    precision highp float;
+    precision mediump sampler2D;
+
+    uniform vec2 u_rdx;
+
+    uniform sampler2D u_pressure;
+    uniform sampler2D u_velocity;
+
+    uniform float u_const;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        float pL = texture2D(u_pressure, (fragCoord+vec2(-1.0, 0.0))/u_textureSize).x;
+        float pR = texture2D(u_pressure, (fragCoord+vec2(1.0, 0.0))/u_textureSize).x;
+        float pB = texture2D(u_pressure, (fragCoord+vec2(0.0, -1.0))/u_textureSize).x;
+        float pT = texture2D(u_pressure, (fragCoord+vec2(0.0, 1.0))/u_textureSize).x;
+
+        vec2 u_New = texture2D(u_velocity, fragCoord/u_textureSize).xy;
+        gl_FragColor = vec4(u_New - u_rdx * vec2(pR - pL, pT - pB), 0, 0);
+    }
+
+  </script>
+
+  <script id="boundaryShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_x;
+    uniform float u_scale;
+    uniform vec2 u_textureSize;
+
+    void main() {
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        if (fragCoord.x < 1.0){
+            gl_FragColor = u_scale*texture2D(u_x, (fragCoord + vec2(1.0, 0.0))/u_textureSize); // next box in texture space
+            return;
+        } else if (fragCoord.x >= u_textureSize.x-1.0){
+            gl_FragColor = u_scale*texture2D(u_x, (fragCoord + vec2(-1.0, 0.0))/u_textureSize);
+            return;
+        } else if (fragCoord.y < 1.0){
+            gl_FragColor = u_scale*texture2D(u_x, (fragCoord + vec2(0.0, 1.0))/u_textureSize);
+            return;
+        } else if (fragCoord.y >= u_textureSize.y-1.0){
+            gl_FragColor = u_scale*texture2D(u_x, (fragCoord + vec2(0.0, -1.0))/u_textureSize);
+            return;
+        }
+
+        gl_FragColor = texture2D(u_x, (fragCoord)/u_textureSize);
+    }
+
+  </script>
+
+  <script id="clearShader" type="x-shader/x-fragment">
+    precision highp float;
+    precision mediump sampler2D;
+
+    varying vec2 vUv;
+    uniform sampler2D u_texture;
+    uniform float pressure_diss;
+
+    void main () {
+      gl_FragColor = value * texture2D(u_texture, vUv);
+    }
+  </script>
+
+  <script id="displayShader" type="x-shader/x-fragment">
+    precision highp float;
+    precision mediump sampler2D;
+
+    varying vec2 vUv;
+    uniform sampler2D u_texture;
+
+    void main () {
+    gl_FragColor = texture2D(u_texture, vUv);
+    }
+  </script>
+
+  <script id="splatShader" type="x-shader/x-fragment">
+    precision highp float;
+    precision mediump sampler2D;
+
+    uniform vec2 u_textureSize;
+
+    uniform vec2 u_mouseCoord;
+    uniform float u_mouseLength;
+    uniform float u_mouseEnable;
+
+    uniform float u_reciprocalRadius;
+
+    void main () {
+      vec2 fragCoord = gl_FragCoord.xy;
+      aspectRatio = fragCoord/u_textureSize;
+      float currentMaterial = texture2D(u_material, aspectRatio).x;
+
+      if (u_mouseEnable == 1.0){
+          vec2 pxDist = fragCoord - u_mouseCoord;
+          currentMaterial += u_mouseLength*0.1*exp(-(pxDist.x*pxDist.x+pxDist.y*pxDist.y)*u_reciprocalRadius);
+      }
+
+      gl_FragColor = vec4(currentMaterial, 0, 0, 0);
+    }
+  </script>
+
+
+  <script id="renderShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_material;
+    uniform vec2 u_textureSize;
+
+    void main() {
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec3 background = vec3(1.0, 1.0, 1.0);
+        vec3 material1 = vec3(0.0, 0.0, 0.0);
+        vec3 material2 = vec3(0.0, 0.0, 0.0);
+        vec3 material3 = vec3(0.0, 0.0, 0.0);
+        vec3 material4 = vec3(0.0, 0.0, 0.0);
+
+        float val = texture2D(u_material, fragCoord/u_textureSize).x/2.0;
+        if (val > 1.0) val = 1.0;
+        if (val < 0.0) val = 0.0;
+
+        float numColors = 3.0;
+
+        vec3 color = vec3(0.0);
+        if (val <= 1.0/numColors) {
+            val *= numColors;
+            color = background*(1.0-val) + material1*val;
+        } else if (val <= 2.0/numColors) {
+            val -= 1.0/numColors;
+            val *= numColors;
+            color = material1*(1.0-val) + material2*val;
+        } else if (val <= 3.0/numColors) {
+            val -= 2.0/numColors;
+            val *= numColors;
+            color = material2*(1.0-val) + material3*val;
+        } else {
+            val -= 3.0/numColors;
+            val *= numColors;
+            color = material3*(1.0-val) + material4*val;
+        }
+
+        gl_FragColor = vec4(color, 1);
+    }
+
+  </script>
+
+
+
+
+
+<!--
+  <script id="advectionShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_velocity;
+    uniform sampler2D u_material;
+
+    uniform vec2 u_textureSize;
+    uniform float u_scale;
+
+    uniform float u_dt;
+
+    vec2 bilinearInterp(vec2 pos, sampler2D texture, vec2 size){
+        //bilinear interp between nearest cells
+
+        vec2 pxCenter = vec2(0.5, 0.5);
+
+        vec2 ceiled = ceil(pos);
+        vec2 floored = floor(pos);
+
+        vec2 n = texture2D(texture, (ceiled+pxCenter)/size).xy;//actually ne
+        vec2 s = texture2D(texture, (floored+pxCenter)/size).xy;//actually sw
+        if (ceiled.x != floored.x){
+            vec2 se = texture2D(texture, (vec2(ceiled.x, floored.y)+pxCenter)/size).xy;
+            vec2 nw = texture2D(texture, (vec2(floored.x, ceiled.y)+pxCenter)/size).xy;
+            n = n*(pos.x-floored.x) + nw*(ceiled.x-pos.x);
+            s = se*(pos.x-floored.x) + s*(ceiled.x-pos.x);
+        }
+        vec2 materialVal = n;
+        if (ceiled.y != floored.y){
+            materialVal = n*(pos.y-floored.y) + s*(ceiled.y-pos.y);
+        }
+        return materialVal;
+    }
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec2 pxCenter = vec2(0.5, 0.5);
+
+        vec2 currentVelocity;
+        if (u_scale == 1.0) currentVelocity = 1.0/u_scale*texture2D(u_velocity, fragCoord/u_textureSize).xy;
+        else {
+            vec2 scaledCoord = (fragCoord-pxCenter)*u_scale;
+            vec2 scaledSize = u_textureSize*u_scale;
+            currentVelocity = 1.0/u_scale*bilinearInterp(vec2(1.0, 1.0) + scaledCoord/scaledSize*(scaledSize-vec2(0.5, 0.5)/u_scale), u_velocity, scaledSize);
+        }
+
+        //implicitly solve advection
+
+        if (length(currentVelocity) == 0.0) {//no velocity
+            gl_FragColor = vec4(texture2D(u_material, fragCoord/u_textureSize).xy, 0, 0);
+            return;
+        }
+
+        vec2 pos = fragCoord - pxCenter - u_dt*currentVelocity;
+
+        vec2 materialVal;
+        //empty boundary
+        if (pos.x < 0.0 || pos.x >= u_textureSize.x-1.0 || pos.y < 0.0 || pos.y >= u_textureSize.y-1.0) materialVal = vec2(0.0);
+        else materialVal = bilinearInterp(pos, u_material, u_textureSize);
+
+        gl_FragColor = vec4(materialVal, 0, 0);
+    }
+
+  </script>
+
+  <script id="gSubtractionShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_velocity;
+    uniform sampler2D u_pressure;
+
+    uniform vec2 u_textureSize;
+
+    uniform float u_const;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec2 currentVelocity = texture2D(u_velocity, fragCoord/u_textureSize).xy;
+
+        float n = texture2D(u_pressure, (fragCoord+vec2(0.0, 1.0))/u_textureSize).x;
+        float s = texture2D(u_pressure, (fragCoord+vec2(0.0, -1.0))/u_textureSize).x;
+        float e = texture2D(u_pressure, (fragCoord+vec2(1.0, 0.0))/u_textureSize).x;
+        float w = texture2D(u_pressure, (fragCoord+vec2(-1.0, 0.0))/u_textureSize).x;
+
+        gl_FragColor = vec4(currentVelocity-u_const*vec2(e-w, n-s), 0, 0);
+    }
+
+  </script>
+
+  <script id="divergenceShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_velocity;
+
+    uniform vec2 u_textureSize;
+
+    uniform float u_const;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        //finite difference formulation of divergence
+
+        float n = texture2D(u_velocity, (fragCoord+vec2(0.0, 1.0))/u_textureSize).y;
+        float s = texture2D(u_velocity, (fragCoord+vec2(0.0, -1.0))/u_textureSize).y;
+        float e = texture2D(u_velocity, (fragCoord+vec2(1.0, 0.0))/u_textureSize).x;
+        float w = texture2D(u_velocity, (fragCoord+vec2(-1.0, 0.0))/u_textureSize).x;
+
+        float div = u_const*(e-w + n-s);
+        gl_FragColor = vec4(div, 0, 0, 0);
+    }
+
+  </script>
+
+  <script id="fApplicationShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_velocity;
+
+    uniform vec2 u_textureSize;
+
+    uniform vec2 u_mouseCoord;
+    uniform vec2 u_mouseDir;
+    uniform float u_mouseEnable;
+
+    uniform float u_reciprocalRadius;
+
+    uniform float u_dt;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec2 currentVelocity = texture2D(u_velocity, fragCoord/u_textureSize).xy;
+
+        if (u_mouseEnable == 1.0){
+            vec2 pxDist = fragCoord - u_mouseCoord;
+            currentVelocity += u_mouseDir*u_dt*exp(-(pxDist.x*pxDist.x+pxDist.y*pxDist.y)*u_reciprocalRadius);
+        }
+
+        gl_FragColor = vec4(currentVelocity, 0, 0);
+    }
+
+  </script>
+
+  <script id="addMaterialShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_material;
+
+    uniform vec2 u_textureSize;
+
+    uniform vec2 u_mouseCoord;
+    uniform float u_mouseLength;
+    uniform float u_mouseEnable;
+
+    uniform float u_reciprocalRadius;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        float currentMaterial = texture2D(u_material, fragCoord/u_textureSize).x;
+
+        if (u_mouseEnable == 1.0){
+            vec2 pxDist = fragCoord - u_mouseCoord;
+            currentMaterial += u_mouseLength*0.1*exp(-(pxDist.x*pxDist.x+pxDist.y*pxDist.y)*u_reciprocalRadius);
+        }
+
+        if (currentMaterial > 0.0) currentMaterial -= 0.002;//material disappears over time
+        gl_FragColor = vec4(currentMaterial, 0, 0, 0);
+    }
+
+  </script>
+
+  <script id="jacobiShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_b;
+    uniform sampler2D u_x;
+
+    uniform vec2 u_textureSize;
+
+    uniform float u_alpha;
+    uniform float u_reciprocalBeta;
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec2 currentState = texture2D(u_b, fragCoord/u_textureSize).xy;
+
+        //implicitly solve diffusion via jacobi iteration
+
+        vec2 n = texture2D(u_x, (fragCoord+vec2(0.0, 1.0))/u_textureSize).xy;
+        vec2 s = texture2D(u_x, (fragCoord+vec2(0.0, -1.0))/u_textureSize).xy;
+        vec2 e = texture2D(u_x, (fragCoord+vec2(1.0, 0.0))/u_textureSize).xy;
+        vec2 w = texture2D(u_x, (fragCoord+vec2(-1.0, 0.0))/u_textureSize).xy;
+
+        vec2 nextState = (n + s + e + w + u_alpha * currentState) * u_reciprocalBeta;
+
+        gl_FragColor = vec4(nextState, 0, 0);
+    }
+
+  </script>
+
+  <script id="renderShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_material;
+    uniform vec2 u_textureSize;
+
+    void main() {
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        vec3 background = vec3(1.0, 1.0, 1.0);
+        vec3 material1 = vec3(0.0, 0.0, 0.0);
+        vec3 material2 = vec3(0.0, 0.0, 0.0);
+        vec3 material3 = vec3(0.0, 0.0, 0.0);
+        vec3 material4 = vec3(0.0, 0.0, 0.0);
+
+        float val = texture2D(u_material, fragCoord/u_textureSize).x/2.0;
+        if (val > 1.0) val = 1.0;
+        if (val < 0.0) val = 0.0;
+
+        float numColors = 3.0;
+
+        vec3 color = vec3(0.0);
+        if (val <= 1.0/numColors) {
+            val *= numColors;
+            color = background*(1.0-val) + material1*val;
+        } else if (val <= 2.0/numColors) {
+            val -= 1.0/numColors;
+            val *= numColors;
+            color = material1*(1.0-val) + material2*val;
+        } else if (val <= 3.0/numColors) {
+            val -= 2.0/numColors;
+            val *= numColors;
+            color = material2*(1.0-val) + material3*val;
+        } else {
+            val -= 3.0/numColors;
+            val *= numColors;
+            color = material3*(1.0-val) + material4*val;
+        }
+
+        gl_FragColor = vec4(color, 1);
+    }
+
+  </script>
+
+  <script id="boundaryShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_texture;
+    uniform float u_scale;
+    uniform vec2 u_textureSize;
+
+    void main() {
+        vec2 fragCoord = gl_FragCoord.xy;
+
+        if (fragCoord.x < 1.0){
+            gl_FragColor = u_scale*texture2D(u_texture, (fragCoord + vec2(1.0, 0.0))/u_textureSize);
+            return;
+        } else if (fragCoord.x >= u_textureSize.x-1.0){
+            gl_FragColor = u_scale*texture2D(u_texture, (fragCoord + vec2(-1.0, 0.0))/u_textureSize);
+            return;
+        } else if (fragCoord.y < 1.0){
+            gl_FragColor = u_scale*texture2D(u_texture, (fragCoord + vec2(0.0, 1.0))/u_textureSize);
+            return;
+        } else if (fragCoord.y >= u_textureSize.y-1.0){
+            gl_FragColor = u_scale*texture2D(u_texture, (fragCoord + vec2(0.0, -1.0))/u_textureSize);
+            return;
+        }
+
+        gl_FragColor = texture2D(u_texture, (fragCoord)/u_textureSize);
+    }
+
+  </script>
+
+  <script id="moveParticlesShader" type="x-shader/x-fragment">
+
+    precision mediump float;
+
+    uniform sampler2D u_particles;
+    uniform sampler2D u_velocity;
+
+    uniform vec2 u_textureSize;
+    uniform vec2 u_screenSize;
+    uniform vec2 u_velocityTextureSize;
+
+    uniform float u_dt;
+
+    uniform float u_scale;
+
+    vec2 bilinearInterp(vec2 pos, sampler2D texture, vec2 size){
+        //bilinear interp between nearest cells
+
+        vec2 pxCenter = vec2(0.5, 0.5);
+
+        vec2 ceiled = ceil(pos);
+        vec2 floored = floor(pos);
+
+        vec2 n = texture2D(texture, (ceiled+pxCenter)/size).xy;//actually ne
+        vec2 s = texture2D(texture, (floored+pxCenter)/size).xy;//actually sw
+        if (ceiled.x != floored.x){
+            vec2 se = texture2D(texture, (vec2(ceiled.x, floored.y)+pxCenter)/size).xy;
+            vec2 nw = texture2D(texture, (vec2(floored.x, ceiled.y)+pxCenter)/size).xy;
+            n = n*(pos.x-floored.x) + nw*(ceiled.x-pos.x);
+            s = se*(pos.x-floored.x) + s*(ceiled.x-pos.x);
+        }
+        vec2 materialVal = n;
+        if (ceiled.y != floored.y){
+            materialVal = n*(pos.y-floored.y) + s*(ceiled.y-pos.y);
+        }
+        return materialVal;
+    }
+
+    void main() {
+
+        vec2 fragCoord = gl_FragCoord.xy;
+        vec2 particleCoord = texture2D(u_particles, fragCoord/u_textureSize).xy;
+
+        vec2 currentVelocity = 1.0/u_scale*bilinearInterp(vec2(1.0, 1.0) + particleCoord*u_scale/u_velocityTextureSize*(u_velocityTextureSize-vec2(0.5, 0.5)/u_scale), u_velocity, u_velocityTextureSize);
+        vec2 nextPosition = particleCoord+currentVelocity*u_dt;//explicitly solve advection
+
+        if (nextPosition.x < 0.0) nextPosition.x = 0.0;
+        else if (nextPosition.x >= u_screenSize.x-3.0) nextPosition.x = u_screenSize.x-3.0;
+        if (nextPosition.y < 0.0) nextPosition.y = 0.0;
+        else if (nextPosition.y >= u_screenSize.y-3.0) nextPosition.y = u_screenSize.y-3.0;
+
+        gl_FragColor = vec4(nextPosition, 0, 0);
+    }
+
+  </script>
+-->
+
+</head>
+
+<a href="#" id="about">?</a>
+
+<body>
+  <canvas id="glcanvas" ></canvas>
+  <script>
+    const _c = document.getElementsByTagName('canvas')[0];
+    _c.width = window.innerWidth;
+    _c.height = window.innerHeight;
+  </script>
+</body>
+</html>

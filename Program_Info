@@ -1,0 +1,115 @@
+Function Order:
+S(u) = P ◯ F ◯ D ◯ A(u)
+
+================
+A(u) - ADVECTION
+================
+
+                Velocity Field Components:
+              Each square has velocity u(x,t),
+
+            _________________________________
+           |+---+---+---+---+---+---+---+---+|
+           ||   |   |   |   |   |   |   |   ||
+           |+---+---+---+---+---+---+---+---+|
+           ||   |   |   |   |   |   |   |   ||
+           |+---+---+---+---+---+---+---+---+|
+           ||   |   |   |   |   | < | ^ |   ||
+           |+---+---+---+---+---+---□---+---+|  {-u(x,t)dt}     □ is the
+           ||   |   |   |   |   | > | > |   ||                  bilinear
+           |+---+---+---+---+---+---+---+---+|                  interpolation
+  {u(x,t)} ||   | < |   |   |   |   |   |   ||                  of the 4 u field
+           |+---+---+---+---+---+---+---+---+|                  values
+           ||   |   |   |   |   |   |   |   ||
+           |+---+---+---+---+---+---+---+---+|
+            ---------------------------------
+
+Gets passed in : (ux, uy, source, destination, time)
+q( x. , t + dt ) = q( x. - u. ( x. , t ) dt , t )
+
+=====================
+D - VISCOUS DIFFUSION
+=====================
+
+( I. - v dt ▽^2 ) u. ( x. , t + dt ) = u. ( x. , t )
+
+Jacobi Iteration:
+
+x ^(k+1)  =   x (i-1,j)^k + x (i+1,j)^k x (i,j-1)^k x (i,j+1)^k + αb(i,j)
+    i, j      __________________________________________________________
+                                        β
+
+Iterates over every k, so that k+1 is the input for the next k
+For diffusion, α = (dx)^2 / n dt ;
+rBeta (which is the reciprocal of β) = 1 / (4 + (dx)^2 / n dt );
+x and b are the velocity texture.
+
+{
+half4 xL = h4texRECT(x, coords - half2(1, 0));
+and so on...
+}                                            where h4 is a 4 dimensional matrix of halfs
+
+              x[01]
+         ________|________  __ <-
+        |+-+-+-+-|-+-+-+-+| __ <- dy = 1
+        |+-+-+-+-|-+-+-+-+|
+        |+-+-+-+-|-+-+-+-+|
+ x[-10] ---------|--------- x[10]
+        |+-+-+-+-|-+-+-+-+|
+        |+-+-+-+-|-+-+-+-+|
+        |+-+-+-+-|-+-+-+-+|
+         --------|--------
+               x[0-1]
+
+Iterate about 20 - 50 times depending.
+
+=====================
+F = FORCE APPLICATION
+=====================
+
+c. = F dt exp [ ( x - xp )^2 + ( y - yp )^2 ]
+              [_____________________________]
+              [               r             ]
+
+r is the desired splat radius,
+(x,y) is the fragment position,
+and (xp,yp) are the impulse (click) positions in the window coordinates
+
+c - vec4 colours
+
+==============
+P = PROJECTION
+==============
+
+Split into 2 equations:
+- Solving the Poisson-pressure equation for p,
+- Subtracting the gradient of p from the intermediate velocity field
+
+Therefore 3 seperate functions:
+a) Jacobi iteration program
+b) Computing the divergence of the intermediate velocity field
+c) Subtracting the gradient of the pressure from the intermediate velocity field
+
+Divergence written to temporary texture, used as input to the b parameter of the Jacobi iteration.
+x parameter of the Jacobi program is set to the pressure texture, first zero valued, (initialised to 0)
+alpha = -(dx)^2,
+rBeta (reciprocal Beta) = 1/4
+
+x ^(k+1)  =   x (i-1,j)^k + x (i+1,j)^k x (i,j-1)^k x (i,j+1)^k + αb(i,j)
+    i, j      __________________________________________________________
+                                        β
+
+Gradient           ▽p = ( dp )      ( dp )                     p (i+1,j) - p (i-1,j)      p (i,j+1) - p(i,j-1)
+                         ____   ,    ____                      ____________________   ,   ___________________
+                        ( dx )      ( dy )                              2dx                       2dy
+
+Divergence         ▽ . u = ( du )      ( dv )                 u (i+1,j) - u (i-1,j)       v (i,j+1) - v (i,j-1)
+                            ____    +   ____                   ___________________    +    ___________________
+                           ( dx )      ( dy )                          2dx                        2dy
+
+typically use around 40-80 jacobi iterations, this affects the accuracy of the simulations.
+It isn't advisable to go below 20 iterations, as the error is too high.
+More iterations result in more detailed vortices, and more overall accuracy but more computation time.
+After the iterations, we bind pressure field texture to parameter p.
+Then a program to compute the gradient of p based on gradient definition,
+and subtracts from intermediate velocity field texture, in parameter w.
