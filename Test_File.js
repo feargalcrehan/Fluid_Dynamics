@@ -1,0 +1,4 @@
+function(
+  mainstring = "Hello World!"
+
+)
