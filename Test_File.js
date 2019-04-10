@@ -1,4 +1,0 @@
-function(
-  mainstring = "Hello World!"
-
-)
